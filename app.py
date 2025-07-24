@@ -1,53 +1,84 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import yfinance as yf
-from datetime import datetime
+import plotly.express as px
+from datetime import datetime, date
+from streamlit_extras.metric_cards import style_metric_cards
+from streamlit_extras.grid import grid
 
-st.title("Dashboard Bovespa")
 
 def build_sidebar():
     st.image("images/logo-250-100-transparente.png")
-    # Lê o CSV como está (sem cabeçalho)
-    ticker_list = pd.read_csv("tickers_ibra.csv", header=None)
-    tickers_options = ticker_list[1].tolist()  # coluna 1 = tickers
+    ticker_list = pd.read_csv("tickers_ibra.csv", index_col=0)
+    tickers = st.multiselect(label="Selecione as Empresas", options=ticker_list, placeholder='Códigos')
+    tickers = [t+".SA" for t in tickers]
+    start_date = st.date_input("De", format="DD/MM/YYYY", value=date(2023,1,2))
+    end_date = st.date_input("Até", format="DD/MM/YYYY", value=date.today())
 
-    # Tickes padrão
-    default_tickers = [t for t in ["PETR4", "SUZ3", "PRIO3"] if t in tickers_options]
-
-    tickers = st.multiselect(
-        label="Selecione os tickers",
-        options=tickers_options,
-        default=default_tickers,
-        placeholder="Escolha as opções"
-    )
-
-    start_date = st.date_input("De", value=datetime(2020, 1, 1))
-    end_date = st.date_input("Até", value=datetime.today())
-
-    return tickers, start_date, end_date
-
-def get_prices(tickers, start_date, end_date):
     if tickers:
-        tickers_yf = [t + ".SA" for t in tickers]
-        prices_raw = yf.download(tickers_yf, start=start_date, end=end_date)
-        # Trata 1 ou vários tickers
-        if "Adj Close" in prices_raw:
-            prices = prices_raw["Adj Close"]
-        elif "Adj Close" in prices_raw.columns:
-            prices = prices_raw[["Adj Close"]]
-            prices.columns = [tickers_yf[0]]
+        prices = yf.download(tickers, start=start_date, end=end_date)["Close"]
+        prices.columns = prices.columns.str.rstrip(".SA")
+        prices['IBOV'] = yf.download("^BVSP", start=start_date, end=end_date)["Close"]
+        return tickers, prices
+    return None, None
+
+def build_main(tickers, prices):
+    weights = np.ones(len(tickers))/len(tickers)
+    prices['portfolio'] = prices.drop("IBOV", axis=1) @ weights
+    norm_prices = 100 * prices / prices.iloc[0]
+    returns = prices.pct_change()[1:]
+    vols = returns.std()*np.sqrt(252)
+    rets = (norm_prices.iloc[-1] - 100) / 100
+
+    mygrid = grid(5 ,5 ,5 ,5 ,5 , 5, vertical_align="top")
+    for t in prices.columns:
+        c = mygrid.container(border=True)
+        c.subheader(t, divider="red")
+        colA, colB, colC = c.columns(3)
+        if t == "portfolio":
+            colA.image("images/pie-chart-dollar-svgrepo-com.svg")
+        elif t == "IBOV":
+            colA.image("images/pie-chart-svgrepo-com.svg")
         else:
-            prices = pd.DataFrame()
-        return prices
-    return pd.DataFrame()
+            colA.image(f'https://raw.githubusercontent.com/thefintz/icones-b3/main/icones/{t}.png', width=85)
+        colB.metric(label="retorno", value=f"{rets[t]:.0%}")
+        colC.metric(label="volatilidade", value=f"{vols[t]:.0%}")
+        style_metric_cards(background_color='rgba(255,255,255,0)')
+
+    col1, col2 = st.columns(2, gap='large')
+    with col1:
+        st.subheader("Desempenho Relativo")
+        st.line_chart(norm_prices, height=600)
+
+    with col2:
+        st.subheader("Risco-Retorno")
+        fig = px.scatter(
+            x=vols,
+            y=rets,
+            text=vols.index,
+            color=rets/vols,
+            color_continuous_scale=px.colors.sequential.Bluered_r
+        )
+        fig.update_traces(
+            textfont_color='white', 
+            marker=dict(size=45),
+            textfont_size=10,                  
+        )
+        fig.layout.yaxis.title = 'Retorno Total'
+        fig.layout.xaxis.title = 'Volatilidade (anualizada)'
+        fig.layout.height = 600
+        fig.layout.xaxis.tickformat = ".0%"
+        fig.layout.yaxis.tickformat = ".0%"        
+        fig.layout.coloraxis.colorbar.title = 'Sharpe'
+        st.plotly_chart(fig, use_container_width=True)
+
+        
+st.set_page_config(layout="wide")
 
 with st.sidebar:
-    tickers, start_date, end_date = build_sidebar()
+    tickers, prices = build_sidebar()
 
-prices = get_prices(tickers, start_date, end_date)
-
-# MAIN PAGE
-if not prices.empty:
-    st.dataframe(prices)
-else:
-    st.info("Selecione ao menos um ticker para exibir os preços.")
+st.title('Python para Investidores')
+if tickers:
+    build_main(tickers, prices)
